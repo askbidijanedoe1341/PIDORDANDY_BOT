@@ -1,0 +1,158 @@
+import os
+import asyncio
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+TOKEN = os.environ.get("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Задайте переменную окружения BOT_TOKEN")
+
+# Хранилище: {chat_id: file_id}
+saved_videos = {}
+# Задачи бесконечного спама
+spam_tasks = {}
+
+# ---------- Команды для работы со ссылками ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Бот-спамер видео и гифок.\n\n"
+        "📎 По ссылке:\n"
+        "  /spam <URL> [кол-во] [gif|video] — спам разово\n"
+        "  /spam_forever <URL> [gif|video] — бесконечный спам\n"
+        "  /stop — остановить бесконечный спам\n\n"
+        "💾 С сохранённым видео (пришлите видео через /set_video):\n"
+        "  /set_video — начать загрузку видео (бот запросит файл)\n"
+        "  /spam_saved [кол-во] — спамить сохранённым видео\n"
+        "  /spam_forever_saved — бесконечный спам сохранённым видео"
+    )
+
+async def spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Укажите URL: /spam <url> [кол-во] [gif|video]")
+        return
+    url = args[0]
+    count = 5
+    media_type = "gif"
+    # Разбор аргументов: ищем цифры и тип
+    for arg in args[1:]:
+        if arg.isdigit():
+            count = int(arg)
+        elif arg.lower() in ("gif", "video"):
+            media_type = arg.lower()
+    chat_id = update.effective_chat.id
+    bot = context.bot
+    for _ in range(count):
+        if media_type == "video":
+            await bot.send_video(chat_id=chat_id, video=url)
+        else:
+            await bot.send_animation(chat_id=chat_id, animation=url)
+        await asyncio.sleep(0.3)
+    await update.message.reply_text(f"Отправлено {count} раз(а) как {media_type}")
+
+async def spam_forever(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Укажите URL: /spam_forever <url> [gif|video]")
+        return
+    url = args[0]
+    media_type = "gif"
+    if len(args) > 1 and args[1].lower() in ("gif", "video"):
+        media_type = args[1].lower()
+    chat_id = update.effective_chat.id
+    bot = context.bot
+    if chat_id in spam_tasks:
+        spam_tasks[chat_id].cancel()
+    task = asyncio.create_task(forever_spam(bot, chat_id, url, media_type, is_saved=False))
+    spam_tasks[chat_id] = task
+    await update.message.reply_text(f"Бесконечный спам запущен ({media_type}). Остановка /stop")
+
+# ---------- Сохранение видео ----------
+async def set_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Пришлите видео в ответ на это сообщение (можно любым файлом).")
+    # Устанавливаем состояние, что ждём видео (можно через context.user_data)
+    context.user_data['waiting_video'] = True
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Если бот не ждёт видео — игнорируем
+    if not context.user_data.get('waiting_video'):
+        return
+    chat_id = update.effective_chat.id
+    video = update.message.video or update.message.document
+    if not video:
+        await update.message.reply_text("Это не видео. Пришлите видеофайл.")
+        return
+    file_id = video.file_id
+    saved_videos[chat_id] = file_id
+    context.user_data['waiting_video'] = False
+    await update.message.reply_text("Видео сохранено! Теперь спамите через /spam_saved")
+
+async def spam_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    file_id = saved_videos.get(chat_id)
+    if not file_id:
+        await update.message.reply_text("Сначала сохраните видео через /set_video")
+        return
+      count = 5
+    args = context.args
+    if args and args[0].isdigit():
+        count = int(args[0])
+    bot = context.bot
+    for _ in range(count):
+        await bot.send_video(chat_id=chat_id, video=file_id)
+        await asyncio.sleep(0.3)
+    await update.message.reply_text(f"Сохранённое видео отправлено {count} раз")
+
+async def spam_forever_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    file_id = saved_videos.get(chat_id)
+    if not file_id:
+        await update.message.reply_text("Сначала сохраните видео через /set_video")
+        return
+    bot = context.bot
+    if chat_id in spam_tasks:
+        spam_tasks[chat_id].cancel()
+    task = asyncio.create_task(forever_spam(bot, chat_id, file_id, "video", is_saved=True))
+    spam_tasks[chat_id] = task
+    await update.message.reply_text("Бесконечный спам сохранённым видео запущен. Остановка /stop")
+
+# ---------- Общая функция бесконечного спама ----------
+async def forever_spam(bot, chat_id, media, media_type, is_saved=False):
+    while True:
+        try:
+            if media_type == "video":
+                await bot.send_video(chat_id=chat_id, video=media)
+            else:
+                await bot.send_animation(chat_id=chat_id, animation=media)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            # Если ошибка (например, удалили файл) — завершаем спам
+            print(f"Ошибка при спаме: {e}")
+            break
+
+# ---------- Остановка ----------
+async def stop_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    task = spam_tasks.pop(chat_id, None)
+    if task:
+        task.cancel()
+        await update.message.reply_text("Спам остановлен")
+    else:
+        await update.message.reply_text("Активного спама нет")
+
+# ---------- Главная функция ----------
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("spam", spam))
+    app.add_handler(CommandHandler("spam_forever", spam_forever))
+    app.add_handler(CommandHandler("set_video", set_video))
+    app.add_handler(CommandHandler("spam_saved", spam_saved))
+    app.add_handler(CommandHandler("spam_forever_saved", spam_forever_saved))
+    app.add_handler(CommandHandler("stop", stop_spam))
+    # Обработчик видео-сообщений (только когда ждём)
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+    app.run_polling()
+
+if name == "main":
+    main()

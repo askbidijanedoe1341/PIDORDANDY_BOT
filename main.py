@@ -18,8 +18,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎬 Бот-спамер видео и гифок.\n\n"
         "📎 По ссылке:\n"
-        "  /spam <URL> [кол-во] [gif|video]\n"
-        "  /spam_forever <URL> [gif|video]\n"
+        "  /download <URL> [кол-во] [gif|video]\n"
+        "  /download_forever <URL> [gif|video]\n"
         "  /stop — остановить бесконечный спам\n\n"
         "💾 С сохранённым видео:\n"
         "  /set_video — загрузить видео в бота\n"
@@ -132,7 +132,6 @@ async def stop_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Активного спама нет")
 
-# ---------- НОВАЯ КОМАНДА /download ----------
 async def download(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     file_id = saved_videos.get(chat_id)
@@ -140,28 +139,29 @@ async def download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала сохраните видео через /set_video")
         return
 
-    # Отправляем сообщение о начале загрузки
     msg = await update.message.reply_text("📥 Начинаю скачивание видео... 0%")
-    # Имитация прогресса
     for percent in range(10, 101, 10):
         await asyncio.sleep(0.5)
         await msg.edit_text(f"📥 Скачивание видео... {percent}%")
     await msg.edit_text("✅ Скачивание завершено! Начинаю показ...")
     await asyncio.sleep(0.5)
 
-    # Спамим сохранённым видео 10 раз
     bot = context.bot
     for _ in range(10):
         await bot.send_video(chat_id=chat_id, video=file_id)
         await asyncio.sleep(0.3)
     await update.message.reply_text("🎉 Все видео отправлены!")
 
-# ---------- Веб-сервер для пингов ----------
+# ---------- Веб-сервер (теперь с обработкой корневого пути) ----------
+async def handle_root(request):
+    return web.Response(text="🤖 Бот-спамер работает! Для проверки используйте /ping")
+
 async def handle_ping(request):
     return web.Response(text="OK")
 
 async def start_web_server():
     app = web.Application()
+    app.router.add_get('/', handle_root)      # <-- теперь корень не 404
     app.router.add_get('/ping', handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -181,7 +181,7 @@ async def main():
     application.add_handler(CommandHandler("spam_saved", spam_saved))
     application.add_handler(CommandHandler("spam_forever_saved", spam_forever_saved))
     application.add_handler(CommandHandler("stop", stop_spam))
-    application.add_handler(CommandHandler("download", download))  # <-- новая команда
+    application.add_handler(CommandHandler("download", download))
     application.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
 
     await application.initialize()

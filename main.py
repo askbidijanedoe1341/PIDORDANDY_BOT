@@ -10,7 +10,9 @@ if not TOKEN:
 
 PORT = int(os.environ.get("PORT", 8080))
 
+# Хранилище видео: ключ - user_id, значение - file_id
 saved_videos = {}
+# Задачи бесконечного спама: ключ - chat_id, значение - task
 spam_tasks = {}
 
 # ---------- Telegram-команды ----------
@@ -18,13 +20,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎬 Бот-спамер видео и гифок.\n\n"
         "📎 По ссылке:\n"
-        "  /download <URL> [кол-во] [gif|video]\n"
-        "  /download_forever <URL> [gif|video]\n"
-        "  /stop — остановить бесконечный спам\n\n"
-        "💾 С сохранённым видео:\n"
-        "  /set_video — загрузить видео в бота\n"
-        "  /spam_saved [кол-во]\n"
-        "  /spam_forever_saved\n"
+        "  /spam <URL> [кол-во] [gif|video]\n"
+        "  /spam_forever <URL> [gif|video]\n"
+        "  /stop — остановить бесконечный спам в этом чате\n\n"
+        "💾 С сохранённым видео (глобально для вас):\n"
+        "  /set_video — загрузить видео в бота (один раз для всех чатов)\n"
+        "  /spam_saved [кол-во] — спамить вашим видео в этом чате\n"
+        "  /spam_forever_saved — бесконечный спам вашим видео\n"
         "⬇️ /download — имитация скачивания и спам (10 раз)"
     )
 
@@ -64,55 +66,58 @@ async def spam_forever(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = context.bot
     if chat_id in spam_tasks:
         spam_tasks[chat_id].cancel()
-    task = asyncio.create_task(forever_spam(bot, chat_id, url, media_type, False))
+    task = asyncio.create_task(forever_spam(bot, chat_id, url, media_type))
     spam_tasks[chat_id] = task
     await update.message.reply_text(f"Бесконечный спам запущен ({media_type}). Остановка /stop")
 
 async def set_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📤 Пришлите видео в ответ на это сообщение.")
+    await update.message.reply_text("📤 Пришлите видео в ответ на это сообщение (оно будет сохранено для вас во всех чатах).")
     context.user_data['waiting_video'] = True
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get('waiting_video'):
         return
-    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     video = update.message.video or update.message.document
     if not video:
         await update.message.reply_text("Это не видео. Пришлите видеофайл.")
         return
-    saved_videos[chat_id] = video.file_id
+    saved_videos[user_id] = video.file_id
     context.user_data['waiting_video'] = False
-    await update.message.reply_text("✅ Видео сохранено! Теперь можно спамить им через /spam_saved или /download")
+    await update.message.reply_text("✅ Видео сохранено глобально для вас! Теперь вы можете спамить им в любом чате через /spam_saved, /download или /spam_forever_saved")
 
 async def spam_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    file_id = saved_videos.get(chat_id)
+    user_id = update.effective_user.id
+    file_id = saved_videos.get(user_id)
     if not file_id:
-        await update.message.reply_text("Сначала сохраните видео через /set_video")
+        await update.message.reply_text("❌ Вы ещё не загрузили видео через /set_video (сделайте это в любом чате, и оно будет доступно везде).")
         return
     count = 5
     args = context.args
     if args and args[0].isdigit():
         count = int(args[0])
+    chat_id = update.effective_chat.id
     bot = context.bot
     for _ in range(count):
         await bot.send_video(chat_id=chat_id, video=file_id)
         await asyncio.sleep(0.3)
     await update.message.reply_text(f"Сохранённое видео отправлено {count} раз")
+
 async def spam_forever_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    file_id = saved_videos.get(chat_id)
+    user_id = update.effective_user.id
+    file_id = saved_videos.get(user_id)
     if not file_id:
-        await update.message.reply_text("Сначала сохраните видео через /set_video")
+        await update.message.reply_text("❌ Сначала загрузите видео через /set_video")
         return
+    chat_id = update.effective_chat.id
     bot = context.bot
     if chat_id in spam_tasks:
         spam_tasks[chat_id].cancel()
-    task = asyncio.create_task(forever_spam(bot, chat_id, file_id, "video", True))
+    task = asyncio.create_task(forever_spam(bot, chat_id, file_id, "video"))
     spam_tasks[chat_id] = task
     await update.message.reply_text("Бесконечный спам сохранённым видео запущен. Остановка /stop")
 
-async def forever_spam(bot, chat_id, media, media_type, is_saved):
+async def forever_spam(bot, chat_id, media, media_type):
     while True:
         try:
             if media_type == "video":
@@ -128,17 +133,18 @@ async def stop_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = spam_tasks.pop(chat_id, None)
     if task:
         task.cancel()
-        await update.message.reply_text("Спам остановлен")
+        await update.message.reply_text("Спам в этом чате остановлен")
     else:
-        await update.message.reply_text("Активного спама нет")
+        await update.message.reply_text("Активного спама в этом чате нет")
 
 async def download(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    file_id = saved_videos.get(chat_id)
+    user_id = update.effective_user.id
+    file_id = saved_videos.get(user_id)
     if not file_id:
-        await update.message.reply_text("❌ Сначала сохраните видео через /set_video")
+        await update.message.reply_text("❌ Сначала загрузите видео через /set_video (в любом чате).")
         return
 
+    chat_id = update.effective_chat.id
     msg = await update.message.reply_text("📥 Начинаю скачивание видео... 0%")
     for percent in range(10, 101, 10):
         await asyncio.sleep(0.5)
@@ -152,7 +158,7 @@ async def download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.3)
     await update.message.reply_text("🎉 Все видео отправлены!")
 
-# ---------- Веб-сервер (теперь с обработкой корневого пути) ----------
+# ---------- Веб-сервер ----------
 async def handle_root(request):
     return web.Response(text="🤖 Бот-спамер работает! Для проверки используйте /ping")
 
@@ -161,7 +167,7 @@ async def handle_ping(request):
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get('/', handle_root)      # <-- теперь корень не 404
+    app.router.add_get('/', handle_root)
     app.router.add_get('/ping', handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -190,6 +196,7 @@ async def main():
 
     while True:
         await asyncio.sleep(3600)
-
+        if name == "main":
+    asyncio.run(main())
 if __name__ == "__main__":
     asyncio.run(main())
